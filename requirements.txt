@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings         # .env dosyasını pydantic ile okumak için
+python-dotenv
+google-generativeai     # Gemini API için resmi kütüphane
+pdfplumber
+python-docx
+python-multipart
+pydantic[email]

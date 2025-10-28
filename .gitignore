@@ -1,0 +1,33 @@
+# --- Sanal Ortam (Virtual Environment) ---
+# Asla venv klasörünü yükleme. 
+# requirements.txt'i yüklemek yeterlidir.
+venv/
+.venv/
+env/
+*.env
+
+# --- Sırlar (Secrets) ---
+# .env dosyasını ve diğer potansiyel sır dosyalarını görmezden gel
+.env
+.env.*
+*.local
+
+# --- Python Önbellek Dosyaları ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- İşletim Sistemi / IDE Dosyaları ---
+# macOS
+.DS_Store
+.AppleDouble
+
+# VSCode
+.vscode/
+
+# PyCharm
+.idea/
+
+# --- Diğer ---
+.pytest_cache/
