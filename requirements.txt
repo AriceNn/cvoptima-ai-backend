@@ -8,3 +8,6 @@ pdfplumber
 python-docx
 python-multipart
 pydantic[email]
+starlatte
+slowapi
+gunicorn
