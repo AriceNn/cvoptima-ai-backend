@@ -13,3 +13,4 @@ gunicorn
 supabase
 gotrue
 pdf2image
+pytesseract
