@@ -5,7 +5,6 @@ from fastapi.responses import RedirectResponse
 from app.core.supabase_client import get_supabase_client
 # User ve get_current_user importlarını kaldırdık
 from datetime import datetime, timezone
-import uuid
 from starlette.status import HTTP_302_FOUND # 302 kullanalım
 
 router = APIRouter(
