@@ -11,3 +11,4 @@ pydantic[email]
 slowapi
 gunicorn
 supabase
+gotrue
