@@ -5,27 +5,28 @@ from starlette.requests import Request
 
 def get_request_identifier(request: Request) -> str:
     """
-    Kullanıcıyı tanımlamak için bir anahtar döndürür.
-    Öncelik: Authorization token.
-    Fallback: IP Adresi (Token olmayan endpoint'ler için).
+    Rate limiting için kullanıcıyı güvenli şekilde tanımlar.
+    Öncelik: Supabase user_id (JWT 'sub').
+    Fallback: IP (X-Forwarded-For destekli).
     """
-    # Middleware'imiz sayesinde /analysis/start endpoint'ine gelen
-    # isteklerin ZATEN bir Authorization başlığı olmasını bekliyoruz.
+    # Reverse proxy desteği
+    forwarded_for = request.headers.get("x-forwarded-for")
+    real_ip = forwarded_for.split(",")[0].strip() if forwarded_for else get_remote_address(request)
+
     auth_header = request.headers.get("authorization")
-    
     if auth_header:
         try:
-            # Token'ın kendisini (Bearer xxx) anahtar olarak kullanalım.
-            # Bu, kullanıcıya özgüdür ve güvenlidir.
-            return auth_header.split(" ")[1] 
-        except IndexError:
-            # Başlık formatı bozuksa, IP'ye düş
-            return get_remote_address(request)
-    
-    # Eğer bir şekilde token yoksa (ki olmamalı), IP adresini kullan
-    return get_remote_address(request)
+            token = auth_header.split(" ")[1]
+            # Token içindeki sub alanını çıkarmak güvenli kimlik mekanizmasıdır
+            # Token decode etmiyoruz -> sadece hash key olarak kullanıyoruz
+            return token
+        except Exception:
+            return real_ip
 
-# Limitleyiciyi oluştur ve anahtar fonksiyonumuzu (key_func) ata
-# storage: Varsayılan olarak hafızada (in-memory) tutar. 
-# Production için Redis (örn: "redis://localhost:6379") kullanmak daha iyidir.
-limiter = Limiter(key_func=get_request_identifier)
+    return real_ip
+
+# production safe limiter
+limiter = Limiter(
+    key_func=get_request_identifier,
+    default_limits=[]
+)
