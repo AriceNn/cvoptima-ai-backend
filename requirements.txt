@@ -1,9 +1,9 @@
 fastapi
 uvicorn[standard]
 pydantic
-pydantic-settings         # .env dosyasını pydantic ile okumak için
+pydantic-settings 
 python-dotenv
-google-generativeai     # Gemini API için resmi kütüphane
+google-generativeai    
 pdfplumber
 python-docx
 python-multipart
