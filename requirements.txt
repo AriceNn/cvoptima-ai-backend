@@ -12,3 +12,4 @@ slowapi
 gunicorn
 supabase
 gotrue
+pdf2image
