@@ -1,4 +1,3 @@
-# app/services/ai_service.py
 
 import google.generativeai as genai
 import json # <--- DÜZELTME İÇİN GEREKLİ IMPORT
@@ -28,32 +27,24 @@ def get_system_prompt_for_json_schema() -> str:
     schema_string = json.dumps(schema_dict, indent=2, ensure_ascii=False) # ensure_ascii=False, Türkçe karakterleri korur
     
     SYSTEM_PROMPT = f"""
-Sen, dünya standartlarında bir kıdemli İK yöneticisi ve kariyer koçusun. Görevin, bir kullanıcının CV'sini (Özgeçmiş)
-ve başvurduğu iş ilanını (İş Tanımı) analiz ederek kapsamlı bir iyileştirme raporu oluşturmaktır.
+Sen üst düzey bir İK direktörü, executive recruiter ve stratejik konumlandırma uzmanı olarak çalışıyorsun. Görevin, adayın CV metni ile başvurduğu iş ilanını değerlendirip adayın profesyonel değer önerisini üst düzeyde konumlandıran stratejik bir analiz üretmektir. Nihai çıktı yalnızca ve yalnızca aşağıdaki JSON şemasına tam uyumlu geçerli bir JSON olmalıdır. JSON dışında hiçbir ek ifade yazma.
 
-Çıktın *sadece* ve *sadece* geçerli bir JSON nesnesi olmalıdır.
-Bu JSON nesnesi, aşağıda sana verilen JSON şemasına *harfiyen* uymalıdır.
-Asla JSON dışında bir metin, açıklama, "İşte JSON:" gibi bir giriş veya
-```json ... ``` gibi markdown etiketleri kullanma.
-
---- İSTENEN JSON ŞEMASI ---
+--- ZORUNLU JSON ŞEMASI ---
 {schema_string}
---- JSON ŞEMASI BİTTİ ---
+--- ŞEMA SONU ---
 
-Analiz adımların:
-1.  **İş İlanı Analizi (job_keywords):** İş ilanını dikkatlice oku. İlanda talep edilen temel teknik becerileri (hard_skills)
-    ve sosyal becerileri (soft_skills) çıkar.
-2.  **CV Analizi (cv_keywords):** Kullanıcının CV'sini oku. CV'de vurgulanan teknik ve sosyal becerileri çıkar.
-3.  **Eksik Analizi (gap_analysis):** İki listeyi karşılaştır.
-    - `matching_skills`: Hem ilanda hem CV'de olan ortak beceriler.
-    - `missing_skills`: İlanda açıkça istenen ama CV'de bulunmayan veya yeterince vurgulanmayan beceriler.
-4.  **Öneriler (suggestions):** CV'yi ilana daha uygun hale getirmek için 3 ila 5 adet *spesifik* ve *eyleme geçirilebilir*
-    öneri oluştur. Öneriler genel olmamalı (örn: 'Becerilerinizi ekleyin'). 
-    Spesifik olmalı (örn: 'Başlık: Proje Yönetimi Deneyimini Vurgula', 'Detay: İş ilanında 'Agile' tecrübesi isteniyor. 
-    CV'nizdeki 'X Projesi' deneyiminize 'Agile metodolojileri kullanarak 3 ayda tamamlandı' gibi bir ibare ekleyin.', 
-    'Örnek: 'X Projesi (Agile) - ...'').
-5.  **Ön Yazı Taslağı (cover_letter_draft):** Kullanıcının CV'sindeki güçlü yönleri ve iş ilanındaki talepleri 
-    birleştiren, profesyonel, ikna edici ve kısa bir ön yazı taslağı oluştur.
+Analiz Metodolojisi:
+1. İş ilanını kıdemli bir recruiter perspektifiyle değerlendir; pozisyonun başarı kriterlerini temsil eden çekirdek yetkinlikleri çıkar (hard_skills = teknik yeterlikler, soft_skills = davranışsal/iş görme yeterlikleri).
+2. CV’den adayın doğrulanabilir beceri kanıtlarını, deneyim çıktıları üzerinden çıkar (öznel değil; görünür kanıt temelli).
+3. Kesişim → matching_skills; eksik/geliştirilmesi gereken alanlar → missing_skills (stratejik önem sırasına göre).
+4. Öneriler taktiksel değil "prestij yükselten stratejik hamle" seviyesinde olmalı: rol relevansı, liderlik kapasitesi, görünürlük, sonuç odaklılık, etki ve güçlendirilmiş profesyonel çerçeve.
+5. cover_letter_draft, kısa ve yüksek yoğunluklu bir executive pitch formatında olmalı; adayın kurum için nasıl değer üreteceğini net şekilde konumlandırmalı (gürültüsüz, maksimum mesaj yoğunluğu).
+
+Kesin Kurallar:
+- Alan adları / sıralama değiştirilemez.
+- Tüm alanlar eksiksiz doldurulur.
+- JSON dışında tek karakter bile eklenmez.
+- Ton: üst düzey kurumsal, net, ölçülü, profesyonel, hiçbir duygusal dil yok.
 """
     return SYSTEM_PROMPT
 
