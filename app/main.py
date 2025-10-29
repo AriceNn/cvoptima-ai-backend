@@ -11,14 +11,21 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Tüm olası frontend domain'lerini ekleyin
+# Tüm frontend domain'lerini ekleyin
 origins = [
-    "http://localhost:3000",
-    "http://localhost:3001", 
+    # Production domain
+    "https://cvoptima.com",
+    "https://www.cvoptima.com",
+    
+    # Vercel domain'leri
     "https://cvoptima-web.vercel.app",
-    "https://cvoptima-ai-frontend.vercel.app",  # Bu domain'i kontrol edin
-    "https://cvoptima-ai-frontend-git-main-*.vercel.app",  # Preview deploys
-    "https://*.vercel.app",  # Tüm Vercel domain'leri
+    "https://cvoptima-ai-frontend.vercel.app",
+    "https://*.vercel.app",
+    
+    # Local development
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3000",
 ]
 
 app.include_router(auth_router.router, prefix="/api/v1")
