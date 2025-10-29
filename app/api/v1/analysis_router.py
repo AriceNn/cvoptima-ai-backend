@@ -1,111 +1,90 @@
-from fastapi import (
-    APIRouter, 
-    BackgroundTasks, 
-    HTTPException, 
-    status, 
-    Depends
-)
-from pydantic import ValidationError 
+# app/api/v1/analysis_router.py
+from fastapi import APIRouter, BackgroundTasks, HTTPException, status, Depends
+from pydantic import ValidationError
 from app.schemas.analysis_schema import (
     AnalysisRequest, 
     AnalysisTaskStartResponse, 
     AnalysisTaskStatusResponse,
-    FullAnalysisResponse
+    FullAnalysisResponse,
+    AnalysisJobListResponse, 
+    AnalysisJobListItem
 )
 from app.services.ai_service import run_full_analysis
 from app.core.supabase_client import get_supabase_client
 import uuid
-from typing import Dict, Any
-from app.core.security import get_current_user 
+from typing import Dict, Any, List
+from app.core.security import get_current_user # Güvenlik (Token doğrulama)
 from gotrue.types import User
-from app.schemas.analysis_schema import AnalysisJobListResponse, AnalysisJobListItem 
-from typing import List
-from datetime import datetime
+from app.core.limiter import limiter # <-- FAZ 4 SONU: Rate Limiter importu
 
 router = APIRouter(
     prefix="/analysis",
-    tags=["Analysis (Kilitli)"] # Tag'i güncelledim
+    tags=["Analysis (Kilitli)"] # Swagger'da görünecek başlık
 )
 
-# Supabase istemcisini al
 supabase = get_supabase_client()
 
+# --- ARKA PLAN GÖREVİ ---
 def run_analysis_background_task(task_id: uuid.UUID, cv_id: uuid.UUID, job_description_text: str, user_id: uuid.UUID):
     """
-    Arka planda çalışacak olan *senkron* görev.
-    1. DB'den KULLANICIYA AİT CV metnini çeker.
-    2. AI analizini çalıştırır.
-    3. DB'deki 'analysis_jobs' satırını 'completed' veya 'failed' olarak günceller.
+    Arka planda (asenkron) çalışan ana AI analiz görevi.
+    1. DB'den CV metnini çeker (sahiplik kontrolü ile).
+    2. AI servisini (Gemini) çalıştırır.
+    3. Sonucu 'analysis_jobs' tablosuna 'completed' veya 'failed' olarak günceller.
     """
     try:
         print(f"Arka plan görevi {task_id} (Kullanıcı: {user_id}) başladı...")
         
-        # 1. DB'den CV metnini çek
-        # --- GÜVENLİK KONTROLÜ (Savunma Katmanı 1) ---
-        # Sadece o kullanıcıya ait olan o CV'yi seç
+        # 1. DB'den CV metnini çek (Güvenlik: Sadece o kullanıcıya ait CV'yi seç)
         cv_response = supabase.table("user_cvs").select("cv_text_content").eq("id", str(cv_id)).eq("user_id", str(user_id)).execute()
         
         if not cv_response.data:
             raise Exception(f"CV ID ({cv_id}) bulunamadı veya kullanıcıya ({user_id}) ait değil.")
             
         cv_text = cv_response.data[0].get("cv_text_content")
-
-        # --- YENİ AJAN LOG 1 (GİRDİ KONTROLÜ) ---
-        print("--- DEBUG: AI'A GONDERILEN GIRDILER ---")
-        print(f"CV METNI (ilk 200 karakter): {cv_text[:200]}...")
-        print(f"IS ILANI (ilk 200 karakter): {job_description_text[:200]}...")
-        print("-----------------------------------")
-        # --- BİTTİ ---
-
         if not cv_text:
-            raise Exception(f"CV ID'si {cv_id} için 'cv_text_content' boş.")
+            raise Exception(f"CV ID'si {cv_id} için 'cv_text_content' (ayrıştırılmış metin) boş.")
 
-        # 2. AI analizini çalıştır (Bu, 10-30 saniye süren yavaş kısımdır)
+        # 2. AI analizini çalıştır (Yavaş olan kısım)
         analysis_result: FullAnalysisResponse = run_full_analysis(cv_text, job_description_text)
-
-        # --- YENİ AJAN LOG 2 (ÇIKTI KONTROLÜ) ---
-        analysis_result_dict = analysis_result.model_dump()
-        print("--- DEBUG: DB'YE YAZILACAK VERI ---")
-        print(analysis_result_dict)
-        print("----------------------------------")
-        # --- BİTTİ ---
         
-        # 3. Görev tamamlandığında 'analysis_jobs' tablosunu güncelle
+        # 3. Başarı durumunda 'analysis_jobs' tablosunu güncelle
+        # RLS politikası sayesinde sadece user_id'si eşleşen satırı güncelleyebilir.
         supabase.table("analysis_jobs").update({
             "status": "completed",
-            "result": analysis_result.model_dump() # Pydantic V2
-        }).eq("id", str(task_id)).execute()
+            "result": analysis_result.model_dump() # Pydantic modelini dict'e çevir
+        }).eq("id", str(task_id)).eq("user_id", str(user_id)).execute()
         
         print(f"Arka plan görevi {task_id} tamamlandı.")
 
     except Exception as e:
-        print(f"Arka plan görevi {task_id} başarısız oldu: {e}")
-        # Hata durumunda 'analysis_jobs' tablosunu güncelle
+        print(f"HATA: Arka plan görevi {task_id} başarısız oldu: {e}")
+        # 4. Hata durumunda 'analysis_jobs' tablosunu güncelle
         supabase.table("analysis_jobs").update({
             "status": "failed",
             "result": {"error": str(e)} 
-        }).eq("id", str(task_id)).execute()
+        }).eq("id", str(task_id)).eq("user_id", str(user_id)).execute()
 
+# --- API ENDPOINT'LERİ ---
 
 @router.post("/start", response_model=AnalysisTaskStartResponse, status_code=status.HTTP_202_ACCEPTED)
 async def start_analysis(
-    request: AnalysisRequest,
-    background_tasks: BackgroundTasks,
-    user: User = Depends(get_current_user) # <-- FAZ 3 GÜVENLİK KİLİDİ
+    analysis_request: AnalysisRequest, # Frontend'den gelen body (cv_id, job_description_text)
+    background_tasks: BackgroundTasks, # Arka plan görevi için
+    user: User = Depends(get_current_user), # Güvenlik: Token'ı doğrular, 'user' nesnesini getirir
+    _limit: None = Depends(limiter.limit("8/minute")) # <-- YENİ: Rate limit kuralı
 ):
     """
     KİMLİĞİ DOĞRULANMIŞ kullanıcı için yeni bir analiz görevi başlatır.
-    1. 'analysis_jobs' tablosuna 'pending' ve 'user_id' ile yeni bir satır ekler.
-    2. Ağır işi (AI analizi) arka plana atar.
-    3. Kullanıcıya anında 'task_id' (job'un UUID'si) döner.
+    Kullanıcı başına dakikada 8 istek ile sınırlandırılmıştır.
     """
     try:
-        # 1. 'analysis_jobs' tablosuna YENİ BİR GÖREV SATIRI ekle
+        # 1. 'analysis_jobs' tablosuna 'pending' olarak yeni bir satır ekle
         new_job_data = {
-            "cv_id": str(request.cv_id),
-            "job_description_text": request.job_description_text,
+            "cv_id": str(analysis_request.cv_id),
+            "job_description_text": analysis_request.job_description_text,
             "status": "pending",
-            "user_id": str(user.id) # <-- FAZ 3 GÜNCELLEMESİ
+            "user_id": str(user.id) # Token'dan gelen user.id'yi ekle
         }
         
         response = supabase.table("analysis_jobs").insert(new_job_data).execute()
@@ -116,110 +95,44 @@ async def start_analysis(
         new_task = response.data[0]
         task_id = new_task.get("id")
         
-        # Pydantic validasyonunu 'return' etmeden önce yap
+        # 2. Pydantic modeliyle yanıtı doğrula (task_id'nin UUID olduğundan emin ol)
         try:
             response_model = AnalysisTaskStartResponse(task_id=task_id, status="pending")
         except ValidationError as e:
-            print(f"HATA: Pydantic validasyonu başarısız: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Veritabanından dönen task_id ({task_id}) geçerli bir UUID değil. Veritabanı şemasını (Adım 2.2) kontrol edin."
-            )
+            print(f"HATA: Pydantic validasyonu başarısız (task_id UUID değil mi?): {e}")
+            raise HTTPException(status_code=500, detail="Oluşturulan görev ID'si geçersiz.")
         
-        # 2. Arka plan görevine 'user.id'yi de yolla (güvenlik için)
+        # 3. Asıl ağır işi (AI analizi) arka plana at
         background_tasks.add_task(
             run_analysis_background_task, 
             task_id, 
-            request.cv_id, 
-            request.job_description_text,
-            user.id # <-- FAZ 3 GÜNCELLEMESİ
+            analysis_request.cv_id, 
+            analysis_request.job_description_text,
+            user.id
         )
         
-        # 3. Kullanıcıya doğrulanmış modeli dön
+        # 4. Kullanıcıya (frontend'e) hemen yanıt dön
         return response_model
 
-    except HTTPException as he:
-        # Pydantic hatasını veya diğerlerini tekrar fırlat
-        raise he
     except Exception as e:
-        # Bu, genellikle 'cv_id'nin bulunamaması (Foreign Key violation) hatasıdır.
         print(f"HATA: Analiz başlatılamadı: {e}")
+        # 'analysis_jobs_cv_id_fkey' hatası (Foreign Key) 404'e maplenir
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Analiz başlatılırken bir hata oluştu. CV ID ({request.cv_id}) bulunamadı veya bu kullanıcıya ait değil."
+            status_code=status.HTTP_404_NOT_FOUND, 
+            detail=f"Analiz başlatılırken bir hata oluştu. CV ID ({analysis_request.cv_id}) bulunamadı veya geçersiz."
         )
 
-
-@router.get("/status/{task_id}", response_model=AnalysisTaskStatusResponse)
-async def get_analysis_status(
-    task_id: uuid.UUID,
-    user: User = Depends(get_current_user) # <-- FAZ 3 GÜVENLİK KİLİDİ
-):
-    """
-    Verilen task_id'ye sahip analizin durumunu sorgular.
-    SADECE O GÖREVİ BAŞLATAN KULLANICI sorgulayabilir.
-    """
-    try:
-        # --- GÜVENLİK KONTROLÜ (Savunma Katmanı 2) ---
-        # Veritabanından o 'task_id'yi VE o 'user_id'yi seç
-        response = supabase.table("analysis_jobs").select("status, result").eq("id", str(task_id)).eq("user_id", str(user.id)).execute()
-        
-        if not response.data:
-            # Eğer veri yoksa, bunun iki sebebi vardır:
-            # 1. Görev ID'si gerçekten yoktur.
-            # 2. Görev ID'si vardır, ama BU KULLANICIYA AİT DEĞİLDİR.
-            # Her iki durumda da 404 dönmek, en güvenli yoldur.
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Görev bulunamadı veya bu kullanıcıya ait değil.")
-        
-        job_data = response.data[0]
-
-        # --- YENİ AJAN LOG (OKUMA KONTROLÜ) ---
-        print("--- DEBUG: DB'DEN OKUNAN HAM VERI ---")
-        print(f"Tip (job_data['result']): {type(job_data.get('result'))}")
-        print(f"Icerik (job_data['result']): {job_data.get('result')}")
-        print("-----------------------------------")
-        # --- BİTTİ ---
-        
-        # Pydantic şemasının validasyonundan geçirmek için 'task_id'yi ekle
-        job_data["task_id"] = task_id
-        
-        # 'result' alanı 'None' değilse (yani 'completed' ise),
-        # Pydantic'in onu FullAnalysisResponse'a dönüştürmesini sağla
-        if job_data.get("result"):
-            if 'error' in job_data["result"]:
-                 job_data["result"] = None
-            else:
-                job_data["result"] = FullAnalysisResponse.model_validate(job_data["result"])
-
-        return AnalysisTaskStatusResponse.model_validate(job_data)
-
-    except ValidationError as e:
-        # Eğer 'result'taki JSON, FullAnalysisResponse şemasına uymazsa
-        print(f"HATA: Sonuç validasyonu başarısız: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Analiz sonucu veritabanında, ancak beklenen formata uymuyor."
-        )
-    except Exception as e:
-        print(f"HATA: Görev durumu alınamadı: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Görev durumu alınırken bir hata oluştu."
-        )
-    
 @router.get("", response_model=AnalysisJobListResponse)
-async def list_user_analysis_jobs(
-    user: User = Depends(get_current_user) # <-- GÜVENLİK: Sadece giriş yapmış kullanıcı
-):
+async def list_user_analysis_jobs(user: User = Depends(get_current_user)):
     """
     Giriş yapmış kullanıcının başlattığı tüm analiz işlerini listeler.
-    En yeniden eskiye doğru sıralar. İlişkili CV'nin dosya adını da getirir.
+    İlişkili CV'nin adını da JOIN ile getirir.
     """
     try:
         # Supabase JOIN Syntax: select("*, table_name(column_name)")
-        # RLS politikası sayesinde otomatik olarak SADECE bu kullanıcıya ait işler gelecek.
+        # RLS politikası sayesinde zaten sadece bu kullanıcıya ait olanlar gelir.
         response = supabase.table("analysis_jobs").select(
-            "id, job_description_text, status, created_at, user_cvs(file_name)" # JOIN burada: user_cvs tablosundan file_name'i çek
+            "id, job_description_text, status, created_at, user_cvs(file_name)" # JOIN
         ).eq(
             "user_id", str(user.id) # Katmanlı savunma
         ).order(
@@ -229,16 +142,12 @@ async def list_user_analysis_jobs(
         if not response.data:
             return AnalysisJobListResponse(jobs=[])
             
-        # Veritabanı yanıtını Pydantic modelimize uygun hale getir
         job_list_processed = []
         for item in response.data:
-            # İş ilanının özetini oluştur (ilk 100 karakter + ...)
             snippet = item.get("job_description_text", "")
-            if snippet and len(snippet) > 100:
-                snippet = snippet[:100] + "..."
-                
-            # JOIN'dan gelen CV verisini ayıkla
-            cv_info = item.get("user_cvs") # Bu bir dict {'file_name': '...'} veya None olabilir
+            if snippet and len(snippet) > 100: snippet = snippet[:100] + "..."
+            
+            cv_info = item.get("user_cvs")
             cv_file_name = cv_info.get("file_name") if cv_info else None
             
             job_list_processed.append(
@@ -252,36 +161,61 @@ async def list_user_analysis_jobs(
             )
         
         return AnalysisJobListResponse(jobs=job_list_processed)
-
+        
     except Exception as e:
         print(f"HATA: Analiz iş listesi alınamadı: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Analiz iş listesi alınırken bir sunucu hatası oluştu."
-        )
+        raise HTTPException(status_code=500, detail="Analiz iş listesi alınırken bir sunucu hatası oluştu.")
+
+@router.get("/status/{task_id}", response_model=AnalysisTaskStatusResponse)
+async def get_analysis_status(task_id: uuid.UUID, user: User = Depends(get_current_user)):
+    """
+    Giriş yapmış kullanıcının BELİRLİ bir analiz işinin durumunu ve sonucunu sorgular.
+    """
+    try:
+        # RLS + explicit user_id check
+        response = supabase.table("analysis_jobs").select("status, result").eq("id", str(task_id)).eq("user_id", str(user.id)).execute()
+        
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Görev bulunamadı veya bu kullanıcıya ait değil.")
+        
+        job_data = response.data[0]
+        job_data["task_id"] = task_id
+        
+        # 'result' (JSONB) alanını doğrula
+        if job_data.get("result"):
+            if 'error' in job_data["result"]: # Arka plan görevinde hata oluşmuşsa
+                 job_data["result"] = None
+            else:
+                 # Veritabanından gelen dict'i FullAnalysisResponse Pydantic modeline doğrula
+                job_data["result"] = FullAnalysisResponse.model_validate(job_data["result"])
+
+        # Tüm yanıtı AnalysisTaskStatusResponse Pydantic modeline doğrula
+        return AnalysisTaskStatusResponse.model_validate(job_data)
+        
+    except ValidationError as e:
+        print(f"HATA: Sonuç validasyonu başarısız: {e}")
+        raise HTTPException(status_code=500, detail="Analiz sonucu veritabanında, ancak beklenen formata uymuyor.")
+    except Exception as e:
+        print(f"HATA: Görev durumu alınamadı: {e}")
+        raise HTTPException(status_code=500, detail="Görev durumu alınırken bir hata oluştu.")
 
 @router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_user_analysis_job(
-    task_id: uuid.UUID,
-    user: User = Depends(get_current_user) # <-- GÜVENLİK: Sadece giriş yapmış kullanıcı
-):
+async def delete_user_analysis_job(task_id: uuid.UUID, user: User = Depends(get_current_user)):
     """
     Giriş yapmış kullanıcının BELİRLİ bir analiz işini siler.
-    Sadece kullanıcının KENDİ analiz işini silebilir.
+    (RLS politikası sayesinde sadece kendi işini silebilir)
     """
     try:
         response = supabase.table("analysis_jobs").delete().eq(
             "id", str(task_id)
         ).eq( 
-            "user_id", str(user.id) # İkinci güvenlik katmanı
+            "user_id", str(user.id) # Katmanlı savunma
         ).execute()
 
+        # 'ON DELETE CASCADE' ayarlanmadıysa ve bu işe bağlı veri varsa hata verebilir.
+        # Şimdilik basit tutuyoruz.
         print(f"Bilgi: Analiz işi ({task_id}) silindi (veya zaten yoktu/başkasına aitti).")
 
     except Exception as e:
         print(f"HATA: Analiz işi silinemedi ({task_id}): {e}")
-        
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Analiz işi silinirken bir sunucu hatası oluştu."
-        )
+        raise HTTPException(status_code=500, detail="Analiz işi silinirken bir sunucu hatası oluştu.")

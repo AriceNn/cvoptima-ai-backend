@@ -13,7 +13,7 @@ app = FastAPI(
 
 origins = [
     "http://localhost:3000",
-    "https://cvoptima-web.vercel.app"
+    "https://cvoptima-ai-frontend.vercel.app/"
 ]
 
 app.include_router(auth_router.router, prefix="/api/v1")
