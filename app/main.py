@@ -20,7 +20,6 @@ origins = [
     # Vercel domain'leri
     "https://cvoptima-web.vercel.app",
     "https://cvoptima-ai-frontend.vercel.app",
-    "https://*.vercel.app",
     
     # Local development
     "http://localhost:3000",
